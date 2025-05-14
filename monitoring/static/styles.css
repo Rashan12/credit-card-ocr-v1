@@ -1,0 +1,60 @@
+/* Custom Styles for OCR Model Monitoring Dashboard */
+     
+     /* Base Styles */
+     body {
+         font-family: 'Inter', sans-serif;
+         line-height: 1.6;
+         background: linear-gradient(135deg, #f7fafc 0%, #edf2f7 100%);
+     }
+     
+     h1, h2 {
+         font-family: 'Inter', sans-serif;
+         font-weight: 700;
+     }
+     
+     /* Card Hover Effects */
+     .shadow-md {
+         transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+     }
+     
+     .shadow-md:hover {
+         transform: translateY(-2px);
+         box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+     }
+     
+     /* Table Headers */
+     th {
+         font-weight: 600;
+         letter-spacing: 0.05em;
+     }
+     
+     /* Table Rows */
+     tr {
+         transition: background-color 0.2s ease-in-out;
+     }
+     
+     /* Chart Containers */
+     canvas {
+         border-radius: 8px;
+         background: #fff;
+         padding: 10px;
+     }
+     
+     /* Responsive Adjustments */
+     @media (max-width: 768px) {
+         h1 {
+             font-size: 1.875rem;
+         }
+     
+         h2 {
+             font-size: 1.25rem;
+         }
+     
+         .text-3xl {
+             font-size: 1.5rem;
+         }
+     
+         .text-sm {
+             font-size: 0.875rem;
+         }
+     }
