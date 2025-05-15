@@ -1,38 +1,19 @@
-# fly.toml app configuration file generated for ocr-api-app-firefly-5279 on 2025-05-15T12:11:15+05:30
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
-app = 'ocr-api-app-firefly-5279'
-primary_region = 'sin'
+app = "ocr-api-app-firefly-5279"
+primary_region = "iad"
 
 [build]
-  dockerfile = "Dockerfile"
+  builder = "docker"
 
 [env]
   PORT = "8080"
 
-[[services]]
-  internal_port = 8080
-  protocol = "tcp"
-
-  [[services.ports]]
-    handlers = ["http"]
-    port = 80
-
-  [[services.ports]]
-    handlers = ["tls", "http"]
-    port = 443
-
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = 'stop'
+  auto_stop_machines = true
   auto_start_machines = true
   min_machines_running = 0
-  processes = ['app']
 
-[[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
+[[mounts]]
+  source = "data"
+  destination = "/data"

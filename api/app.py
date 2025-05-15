@@ -15,6 +15,10 @@ from threading import Lock
 from transformers import ViTModel
 import base64
 import torchvision.transforms as transforms
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
@@ -22,8 +26,8 @@ CORS(app)
 # Transition state
 USE_VISION_API = True  # Will be updated based on transition criteria
 
-# Database path
-DB_PATH = DB_PATH = os.path.join(os.path.dirname(__file__), 'metrics.db')
+# Database path (use environment variable for Fly.io volume)
+DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), 'metrics.db'))
 
 class MetricsDB:
     _instance = None
@@ -129,6 +133,28 @@ class MetricsDB:
                 ''', (current_timestamp, "security_number", 1 if used_vit["security_number"] else 0, 0, vit_accuracy_security, 0.0))
         self.conn.commit()
         print(f"Logged metrics for {side} to database successfully")
+
+# Initialize model and learner at module level
+try:
+    model = CreditCardViT()
+    # Load pre-trained weights from Hugging Face
+    pretrained_model = ViTModel.from_pretrained('google/vit-base-patch16-224')
+    # Assuming CreditCardViT can load ViTModel weights (may need adaptation depending on implementation)
+    model.load_state_dict(pretrained_model.state_dict(), strict=False)
+    print("Loaded pre-trained weights from google/vit-base-patch16-224")
+
+    model_path = "vit_model_weights.pth"
+    if os.path.exists(model_path):
+        print(f"Loading model weights from {model_path}")
+        model.load(model_path)
+    else:
+        print("No pre-trained weights found at specified path. Using Hugging Face weights.")
+    metrics_db = MetricsDB()  # Create MetricsDB instance
+    learner = OnlineLearner(model, metrics_db)  # Pass metrics_db to OnlineLearner
+    print("Model and learner initialized successfully")
+except Exception as e:
+    print(f"Error initializing model: {str(e)}")
+    raise e
 
 def check_transition_criteria():
     global USE_VISION_API
@@ -528,28 +554,3 @@ def proceed():
     response = {"message": "Proceed confirmed, all temporary data deleted"}
     print(f"Returning proceed response: {response}")
     return jsonify(response)
-
-if __name__ == '__main__':
-    print("Starting Flask application...")
-    try:
-        model = CreditCardViT()
-        # Load pre-trained weights from Hugging Face
-        pretrained_model = ViTModel.from_pretrained('google/vit-base-patch16-224')
-        # Assuming CreditCardViT can load ViTModel weights (may need adaptation depending on implementation)
-        model.load_state_dict(pretrained_model.state_dict(), strict=False)
-        print("Loaded pre-trained weights from google/vit-base-patch16-224")
-        
-        model_path = "vit_model_weights.pth"
-        if os.path.exists(model_path):
-            print(f"Loading model weights from {model_path}")
-            model.load(model_path)
-        else:
-            print("No pre-trained weights found at specified path. Using Hugging Face weights.")
-        metrics_db = MetricsDB()  # Create MetricsDB instance
-        learner = OnlineLearner(model, metrics_db)  # Pass metrics_db to OnlineLearner
-        print("Model and learner initialized successfully")
-    except Exception as e:
-        print(f"Error initializing model: {str(e)}")
-        raise e
-    if __name__ == "__main__":
-        app.run(debug=True, host='0.0.0.0', port=8080)

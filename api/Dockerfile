@@ -1,17 +1,15 @@
-# Use a lightweight Python image
-FROM python:3.10-slim
+# Use a Python base image
+FROM python:3.9-slim
 
 # Set working directory
 WORKDIR /app
 
-# Copy all files
-COPY . /app
-
-# Install dependencies
+# Copy requirements file and install dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Expose port
-EXPOSE 8080
+# Copy the application code
+COPY . .
 
-# Run the app
-CMD ["gunicorn", "-b", "0.0.0.0:8080", "app:app"]
+# Command to run the app with Gunicorn
+CMD ["gunicorn", "--workers", "2", "--bind", "0.0.0.0:8080", "app:app"]

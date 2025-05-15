@@ -7,7 +7,7 @@ google-cloud-vision==3.10.1
 googleapis-common-protos==1.70.0
 grpcio==1.72.0rc1
 grpcio-status==1.72.0rc1
-gunicorn
+gunicorn==22.0.0
 idna==3.10
 numpy==2.2.5
 opencv-python==4.11.0.86
@@ -24,4 +24,5 @@ flask-cors
 pillow
 torch
 torchvision
+transformers==4.35.2 
 python-dotenv
