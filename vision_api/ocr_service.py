@@ -107,6 +107,50 @@ class MetricsDB:
               0, 1 if used_vit["card_number"] else 0, 1 if used_vit["expiry_date"] else 0, 1 if used_vit["security_number"] else 0))
         self.conn.commit()
 
+def live_extract_card_details(image_content, is_front=True):
+    side = 'front' if is_front else 'back'
+    start_time = datetime.now()
+    try:
+        image = Image.open(io.BytesIO(image_content)).convert('RGB')
+        text = extract_text_from_image(image_content)
+        if text:
+            lines = text.split('\n')
+            card_number = next((l for l in lines if len(l.replace(" ", "")) == 16 and l.replace(" ", "").isdigit()), "")
+            expiry_date = next((l for l in lines if "/" in l and len(l.replace("/", "").replace(" ", "")) == 4 and l.replace("/", "").isdigit()), "")
+            security_number = next((l for l in lines if len(l) in [3, 4] and l.isdigit()), "") if not is_front else ""
+
+            if is_front:
+                if card_number and expiry_date:
+                    instruction = "Card detected. Hold steady."
+                elif card_number:
+                    instruction = "Card number detected. Adjust for expiry date."
+                elif expiry_date:
+                    instruction = "Expiry date detected. Adjust for card number."
+                else:
+                    instruction = "No card details detected. Adjust position."
+            else:
+                if security_number:
+                    instruction = "Security number detected. Hold steady."
+                else:
+                    instruction = "No security number detected. Adjust position."
+
+            ocr_result = {
+                "card_number": card_number if is_front else "",
+                "expiry_date": expiry_date if is_front else "",
+                "security_number": security_number if not is_front else "",
+            }
+        else:
+            instruction = "No text detected. Position the card in the frame."
+            ocr_result = {}
+
+        return {
+            "ocr_result": ocr_result,
+            "instruction": instruction,
+            "processing_time": (datetime.now() - start_time).total_seconds()
+        }
+    except Exception as e:
+        return {"error": str(e), "instruction": "Error processing frame", "processing_time": (datetime.now() - start_time).total_seconds()}
+
 def calculate_accuracy(prediction, ground_truth):
     if not ground_truth or not prediction:
         return 0.0

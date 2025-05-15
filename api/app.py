@@ -3,7 +3,7 @@ from flask_cors import CORS
 from vit_model.model.vit_model import CreditCardViT
 from vit_model.model.online_learning import OnlineLearner
 from vit_model.model.validation import validate_card_details
-from vision_api.ocr_service import extract_card_details
+from vision_api.ocr_service import extract_card_details, live_extract_card_details
 from PIL import Image
 import io
 import os
@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from threading import Lock
 from transformers import ViTModel
 import base64
+import torchvision.transforms as transforms
 
 app = Flask(__name__)
 CORS(app)
@@ -209,11 +210,15 @@ def process_card():
                 "vit_accuracy_security": front_result.get("vit_accuracy_security", 0.0)
             },
             "back": {
-                "vision_success": 1 if "error" not in back_result else 0,
+                "vision_success": 1 if "error" in back_result else 0,
                 "vit_accuracy_card": back_result.get("vit_accuracy_card", 0.0),
                 "vit_accuracy_expiry": back_result.get("vit_accuracy_expiry", 0.0),
                 "vit_accuracy_security": back_result.get("vit_accuracy_security", 0.0)
             }
+        },
+        "snapshots": {
+            "front": front_result["cropped_snapshot"],
+            "back": back_result["cropped_snapshot"]
         }
     }
     print(f"Combined result: {combined_result}")
@@ -242,6 +247,7 @@ def process_single_side(file, side, is_front):
     vit_accuracy_expiry = 0.0
     vit_accuracy_security = 0.0
     vit_confidence = {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0}
+    cropped_snapshot = ""
 
     # Read image file stream directly for real-time processing
     try:
@@ -255,7 +261,19 @@ def process_single_side(file, side, is_front):
 
     # Convert stream to image for snapshot and processing
     image = Image.open(io.BytesIO(file_stream)).convert('RGB')
-    snapshot = base64.b64encode(io.BytesIO(file_stream).getvalue()).decode('utf-8')
+    width, height = image.size
+    # Crop to the central portion assuming the card occupies roughly 70% of the image height
+    card_height = int(0.7 * height)
+    top = (height - card_height) // 2
+    bottom = top + card_height
+    left = 0
+    right = width
+    cropped_image = image.crop((left, top, right, bottom))
+
+    # Convert cropped image to base64
+    buffered = io.BytesIO()
+    cropped_image.save(buffered, format="JPEG")
+    cropped_snapshot = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
     # Call updated extract_card_details (handles both Vision API and ViT)
     vision_start = time.time()
@@ -305,6 +323,48 @@ def process_single_side(file, side, is_front):
             "use_vit": used_vit
         }
 
+    # Update model with feedback if Vision API succeeded (for each validated field)
+    if USE_VISION_API and vision_success:
+        feedback_start = time.time()
+        try:
+            feedback_data = {
+                "card_number": validated_result["card_number"] if validated_result["card_number"] else "",
+                "expiry_date": validated_result["expiry_date"] if validated_result["expiry_date"] else "",
+                "cvv": validated_result["security_number"] if validated_result["security_number"] else "",
+                "confidence": result["confidence_scores"]["card_number"]  # Using card_number confidence as proxy
+            }
+            # Only update if at least one field is non-empty
+            if feedback_data["card_number"] or feedback_data["expiry_date"] or feedback_data["cvv"]:
+                learner.update_with_feedback(image, feedback_data)
+                print(f"Model updated with {side} feedback from scan")
+        except Exception as e:
+            print(f"Error updating model with {side} feedback from scan: {str(e)}")
+        feedback_end = time.time()
+        print(f"Feedback update time for {side}: {feedback_end - feedback_start:.2f} seconds")
+
+        # Re-run ViT model to calculate updated accuracies after learning
+        try:
+            transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            ])
+            image_tensor = transform(image).unsqueeze(0)
+            learner.model.eval()
+            with torch.no_grad():
+                card_logits, expiry_logits, security_logits = learner.model(image_tensor)
+                # Convert logits to predicted strings (simplified, assuming model outputs digits directly)
+                pred_card = ''.join([str(torch.argmax(card_logits[i], dim=0).item()) for i in range(16)]) if card_logits.shape[1] == 16 else ''
+                pred_expiry = ''.join([str(torch.argmax(expiry_logits[i], dim=0).item()) for i in range(4)]) if expiry_logits.shape[1] == 4 else ''
+                pred_security = ''.join([str(torch.argmax(security_logits[i], dim=0).item()) for i in range(3)]) if security_logits.shape[1] == 3 else ''
+                # Format predictions to match validated results
+                pred_card_formatted = ' '.join([pred_card[i:i+4] for i in range(0, 16, 4)]) if pred_card else ''
+                pred_expiry_formatted = f"{pred_expiry[:2]}/{pred_expiry[2:]}" if pred_expiry else ''
+                pred_security_formatted = pred_security if pred_security else ''
+        except Exception as e:
+            print(f"Error re-running ViT model for accuracy calculation on {side}: {str(e)}")
+            pred_card_formatted = pred_expiry_formatted = pred_security_formatted = ''
+
     # Calculate accuracies (using Vision API as ground truth if available)
     if USE_VISION_API and vision_success:
         vision_accuracy_card = 1.0 if validated_result["card_number"] else 0.0
@@ -313,35 +373,18 @@ def process_single_side(file, side, is_front):
         if is_front:
             if validated_result["card_number"]:
                 gt_card = validated_result["card_number"].replace(" ", "")
-                pred_card = result["card_number"].replace(" ", "")
-                vit_accuracy_card = calculate_accuracy(pred_card, gt_card) if used_vit["card_number"] else 0.0
+                pred_card = pred_card_formatted.replace(" ", "") if pred_card_formatted else result["card_number"].replace(" ", "")
+                vit_accuracy_card = calculate_accuracy(pred_card, gt_card) if pred_card else 0.0
             if validated_result["expiry_date"]:
                 gt_expiry = validated_result["expiry_date"].replace("/", "")
-                pred_expiry = result["expiry_date"].replace("/", "")
-                vit_accuracy_expiry = calculate_accuracy(pred_expiry, gt_expiry) if used_vit["expiry_date"] else 0.0
+                pred_expiry = pred_expiry_formatted.replace("/", "") if pred_expiry_formatted else result["expiry_date"].replace("/", "")
+                vit_accuracy_expiry = calculate_accuracy(pred_expiry, gt_expiry) if pred_expiry else 0.0
         else:
             if validated_result["security_number"]:
                 gt_security = validated_result["security_number"]
-                pred_security = result["security_number"]
-                vit_accuracy_security = calculate_accuracy(pred_security, gt_security) if used_vit["security_number"] else 0.0
+                pred_security = pred_security_formatted if pred_security_formatted else result["security_number"]
+                vit_accuracy_security = calculate_accuracy(pred_security, gt_security) if pred_security else 0.0
         print(f"Calculated accuracies for {side} - ViT: card={vit_accuracy_card}, expiry={vit_accuracy_expiry}, security={vit_accuracy_security}")
-
-    # Update model with feedback if Vision API succeeded (including every successful scan)
-    if USE_VISION_API and vision_success and not validated_result["errors"]:
-        feedback_start = time.time()
-        try:
-            feedback_data = {
-                "card_number": result["card_number"],
-                "expiry_date": result["expiry_date"],
-                "cvv": result["security_number"],
-                "confidence": result["confidence_scores"]["card_number"]  # Using card_number confidence as proxy
-            }
-            learner.update_with_feedback(image, feedback_data)
-            print(f"Model updated with {side} feedback from scan")
-        except Exception as e:
-            print(f"Error updating model with {side} feedback from scan: {str(e)}")
-        feedback_end = time.time()
-        print(f"Feedback update time for {side}: {feedback_end - feedback_start:.2f} seconds")
 
     # Log metrics to database
     metrics_db = MetricsDB()
@@ -370,12 +413,23 @@ def process_single_side(file, side, is_front):
         "used_vit": used_vit,
         "vit_accuracy_card": vit_accuracy_card,
         "vit_accuracy_expiry": vit_accuracy_expiry,
-        "vit_accuracy_security": vit_accuracy_security
+        "vit_accuracy_security": vit_accuracy_security,
+        "cropped_snapshot": cropped_snapshot
     }
 
 def log_metrics(side, vision_success, vit_accuracy_card, vit_accuracy_expiry, vit_accuracy_security, vision_confidence, vit_confidence, used_vit):
     # This function is now handled by MetricsDB class
     pass
+
+@app.route('/live_ocr', methods=['POST'])
+def live_ocr():
+    if 'image' not in request.files:
+        return jsonify({"error": "No image provided"}), 400
+    image_file = request.files['image']
+    image_content = image_file.read()
+    is_front = request.form.get('is_front', 'true').lower() == 'true'
+    result = live_extract_card_details(image_content, is_front=is_front)
+    return jsonify(result)
 
 @app.route('/feedback', methods=['POST'])
 def provide_feedback():
@@ -482,6 +536,12 @@ def confirm_feedback():
 @app.route('/proceed', methods=['POST'])
 def proceed():
     print("Received /proceed request...")
+    # Process any remaining feedback in the buffer before deleting data
+    try:
+        learner.process_feedback_batch()
+        print("Processed remaining feedback buffer before proceeding")
+    except Exception as e:
+        print(f"Error processing feedback buffer on proceed: {str(e)}")
     response = {"message": "Proceed confirmed, all temporary data deleted"}
     print(f"Returning proceed response: {response}")
     return jsonify(response)
