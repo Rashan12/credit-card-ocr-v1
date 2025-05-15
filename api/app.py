@@ -23,7 +23,7 @@ CORS(app)
 USE_VISION_API = True  # Will be updated based on transition criteria
 
 # Database path
-DB_PATH = r"C:\Users\PM_User\Documents\credit-card-ocr\api\metrics.db"
+DB_PATH = DB_PATH = os.path.join(os.path.dirname(__file__), 'metrics.db')
 
 class MetricsDB:
     _instance = None
@@ -210,15 +210,11 @@ def process_card():
                 "vit_accuracy_security": front_result.get("vit_accuracy_security", 0.0)
             },
             "back": {
-                "vision_success": 1 if "error" in back_result else 0,
+                "vision_success": 1 if "error" not in back_result else 0,
                 "vit_accuracy_card": back_result.get("vit_accuracy_card", 0.0),
                 "vit_accuracy_expiry": back_result.get("vit_accuracy_expiry", 0.0),
                 "vit_accuracy_security": back_result.get("vit_accuracy_security", 0.0)
             }
-        },
-        "snapshots": {
-            "front": front_result["cropped_snapshot"],
-            "back": back_result["cropped_snapshot"]
         }
     }
     print(f"Combined result: {combined_result}")
@@ -247,7 +243,6 @@ def process_single_side(file, side, is_front):
     vit_accuracy_expiry = 0.0
     vit_accuracy_security = 0.0
     vit_confidence = {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0}
-    cropped_snapshot = ""
 
     # Read image file stream directly for real-time processing
     try:
@@ -261,19 +256,8 @@ def process_single_side(file, side, is_front):
 
     # Convert stream to image for snapshot and processing
     image = Image.open(io.BytesIO(file_stream)).convert('RGB')
-    width, height = image.size
-    # Crop to the central portion assuming the card occupies roughly 70% of the image height
-    card_height = int(0.7 * height)
-    top = (height - card_height) // 2
-    bottom = top + card_height
-    left = 0
-    right = width
-    cropped_image = image.crop((left, top, right, bottom))
-
-    # Convert cropped image to base64
-    buffered = io.BytesIO()
-    cropped_image.save(buffered, format="JPEG")
-    cropped_snapshot = base64.b64encode(buffered.getvalue()).decode('utf-8')
+    snapshot = base64.b64encode(io.BytesIO(file_stream).getvalue()).decode('utf-8')
+    cropped_snapshot = snapshot  # Assuming cropped_snapshot is derived from snapshot; adjust if necessary
 
     # Call updated extract_card_details (handles both Vision API and ViT)
     vision_start = time.time()
@@ -398,7 +382,7 @@ def process_single_side(file, side, is_front):
         "security_number": result["security_number"] if USE_VISION_API else validated_result["security_number"],
         "card_type": validated_result["card_type"],
         "errors": result["errors"],
-        "snapshot": snapshot
+        "snapshot": cropped_snapshot
     }
     if not USE_VISION_API and validated_result.get("use_vit", {}).get(side == 'front' and "card_number" or "security_number", False):
         final_result.update({
@@ -413,8 +397,7 @@ def process_single_side(file, side, is_front):
         "used_vit": used_vit,
         "vit_accuracy_card": vit_accuracy_card,
         "vit_accuracy_expiry": vit_accuracy_expiry,
-        "vit_accuracy_security": vit_accuracy_security,
-        "cropped_snapshot": cropped_snapshot
+        "vit_accuracy_security": vit_accuracy_security
     }
 
 def log_metrics(side, vision_success, vit_accuracy_card, vit_accuracy_expiry, vit_accuracy_security, vision_confidence, vit_confidence, used_vit):
@@ -562,9 +545,11 @@ if __name__ == '__main__':
             model.load(model_path)
         else:
             print("No pre-trained weights found at specified path. Using Hugging Face weights.")
-        learner = OnlineLearner(model)
+        metrics_db = MetricsDB()  # Create MetricsDB instance
+        learner = OnlineLearner(model, metrics_db)  # Pass metrics_db to OnlineLearner
         print("Model and learner initialized successfully")
     except Exception as e:
         print(f"Error initializing model: {str(e)}")
         raise e
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    if __name__ == "__main__":
+        app.run(debug=True, host='0.0.0.0', port=8080)

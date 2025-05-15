@@ -4,12 +4,11 @@ from torch.nn import CrossEntropyLoss
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from PIL import Image
 import torchvision.transforms as transforms
-from api.metrics_db import MetricsDB
 import os
 import numpy as np
 
 class OnlineLearner:
-    def __init__(self, model, learning_rate=5e-3, T_max=150, eta_min=1e-6, weight_decay=1e-4):
+    def __init__(self, model, metrics_db, learning_rate=5e-3, T_max=150, eta_min=1e-6, weight_decay=1e-4):
         self.model = model
         self.optimizer = AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
         self.scheduler = CosineAnnealingLR(self.optimizer, T_max=T_max, eta_min=eta_min)
@@ -19,7 +18,7 @@ class OnlineLearner:
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
-        self.metrics_db = MetricsDB()
+        self.metrics_db = metrics_db  # Use the passed MetricsDB instance
         self.step_count = 0
         self.feedback_buffer = []  # Buffer to store feedback for batch learning
 

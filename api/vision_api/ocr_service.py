@@ -12,6 +12,11 @@ import numpy as np
 from vit_model.model.vit_model import CreditCardViT
 from threading import Lock
 import base64
+from dotenv import load_dotenv
+
+# Load the .env file from the api directory (one level up from vision_api)
+dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+load_dotenv(dotenv_path)
 
 # Initialize Vision API client
 client = vision.ImageAnnotatorClient()
@@ -51,6 +56,13 @@ def process_with_vit(image):
     with torch.no_grad():
         image_tensor = transform(image).unsqueeze(0).to(device)
         result = vit_model.predict(image)
+        # Ensure predictions are scalars, not tensors
+        if isinstance(result["predictions"]["card_number"], torch.Tensor):
+            result["predictions"]["card_number"] = torch.argmax(result["predictions"]["card_number"]).item()
+        if isinstance(result["predictions"]["expiry_date"], torch.Tensor):
+            result["predictions"]["expiry_date"] = torch.argmax(result["predictions"]["expiry_date"]).item()
+        if isinstance(result["predictions"]["security_number"], torch.Tensor):
+            result["predictions"]["security_number"] = torch.argmax(result["predictions"]["security_number"]).item()
         return result
 
 class MetricsDB:
@@ -89,6 +101,19 @@ class MetricsDB:
                 used_vit_security INTEGER
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS training_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME,
+                epoch INTEGER,
+                batch_size INTEGER,
+                total_loss REAL,
+                card_loss REAL,
+                expiry_loss REAL,
+                security_loss REAL,
+                learning_rate REAL
+            )
+        ''')
         self.conn.commit()
 
     def log_metrics(self, is_front, side, vision_success, vit_accuracy_card, vit_accuracy_expiry, vit_accuracy_security, 
@@ -105,6 +130,15 @@ class MetricsDB:
               vision_confidence["card_number"], vision_confidence["expiry_date"], vision_confidence["security_number"],
               vit_confidence["card_number"], vit_confidence["expiry_date"], vit_confidence["security_number"],
               0, 1 if used_vit["card_number"] else 0, 1 if used_vit["expiry_date"] else 0, 1 if used_vit["security_number"] else 0))
+        self.conn.commit()
+
+    def log_training(self, epoch, batch_size, total_loss, card_loss, expiry_loss, security_loss, learning_rate):
+        current_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT INTO training_logs (timestamp, epoch, batch_size, total_loss, card_loss, expiry_loss, security_loss, learning_rate)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (current_timestamp, epoch, batch_size, total_loss, card_loss, expiry_loss, security_loss, learning_rate))
         self.conn.commit()
 
 def live_extract_card_details(image_content, is_front=True):
@@ -268,10 +302,3 @@ def extract_card_details(image_content, is_front=True, use_vision_api=True):
     except Exception as e:
         errors.append(str(e))
         return {"error": str(e), "confidence_scores": {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0}, "used_vit": used_vit, "processing_time": (datetime.now() - start_time).total_seconds()}
-
-def calculate_accuracy(prediction, ground_truth):
-    if not ground_truth or not prediction:
-        return 0.0
-    total = len(ground_truth)
-    correct = sum(1 for p, t in zip(prediction, ground_truth) if p == t)
-    return correct / total if total > 0 else 0.0
