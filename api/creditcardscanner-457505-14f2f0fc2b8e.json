@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "creditcardscanner-457505",
+  "private_key_id": "14f2f0fc2b8ee7e16c38ff1b9c214da24a8e5c38",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDP8Ke2VAZHueOV\nYp9hdTWvd+UbDKWKN+6WjZ/wnwbJ8ubbVnODuhnVOvhLjdCwi1uPVbVSpEHKAlYb\nbhPbNNfw1xE5HV6XyxYw0AzAR1sBqhh7nOUwdaTWCBuOH/WuOhgxOsnHKFFWisGN\nLeg/Nb8p7+KZgcA+2Qbtqbr7HhOVZViVbPyQiHPHH3FA5JH78F1EwlWB4ugqmmzH\nW0eB8uOuX//y/oZ+S8Ugmu2CMvVwcIfau426ArsEfUEJElKKUo2HpN18Gin/PErz\ny8m4dk960IFP857P2TvFwSI3jsFEpcIwmTeGGyTlYwkHV8TN61DIRrk4YZ/kjBlG\nU+5GPVSdAgMBAAECggEAHhKJzr6cIedqWIJo1mljGDtYsO7FShYItVFKHjyBeNde\nN75q+lQBxGrA2fxqf/3HghU9IfSLZzGrTlA/IuajjDsuTHpI4d8HGIweK/il2rnE\nzKvGIZoB+so1YfqRR18zfHsqD1lvWfq7PzWybuHRAbmlpdmz+eLdM6XmWsbgwiwh\nHnoMmPw0V213F9Gi6vozTDwUCV68At12ay8rUCnInslztswTJtmMTXnoFPvGIEAC\n3hHcHlZzsDTcoE7Po/Y3x1oWgTa53Mfa2MPu4gM5FIey+t72+E+QGhZIf27IC39I\nMVj/gqFrnznEq6GiP88eCVwZg1RZtSBDLTC8G1gZqQKBgQD2zyO107b07Fa7Ki1Y\nRH4X6jQgTKC65N5a32aux1JLbbzZaZDyG9EzCrnRv+WbJ6rsQbAt40Ds26R3nevp\nqZRvxzPMTzjziOI1LoWFMPr9voNnYzx1Ek9aacDE4vCvBqbStqYeTuhLeKxbXBLT\nq4tqNib3fck7oYQXjJ1J8gT8dwKBgQDXrvjdpBwPo0HBc8Wu0KS3z1z9CtUE/AME\ncArksu1IICtgAdgN2a6BsJYkDdNmYlHQKC1m2yvYdaXuf6OFYSbQTITJx6rW9/P/\nY79jwRBibzGeT9fnQvQEpM9Me+jLd/owqUr3MXKIKVA0oHUF1sOSSXa0gmsYUvfK\n6PuywAnAiwKBgQDXZq7m6PCbT4zeapAKojReUNPPgLEii86YBrOKRIFJPWv9X4nW\nE3sADhNgwRb106fz69yEH/sw/PzMPLKBSrQ23ecSH+43dbbe7Uwwky/qtxPd7pj8\nH8/Lu9I2w02Fo8uCyU+v0fQgsh/S2EfCHsxdFQfrJgezmGI9X0aDG8tIPwKBgQCh\nBDEqVj/UtM58O4/TCFRQHPCQwCtzgyhFgdfAEIvwEoQPMpE3FdGfZFNSKzgs8S2e\ntr/eT7UV7g6oVIWhJ3wweU+QzA0QWx+/A5p4QEOZGOX0CCtorKU7akaQFNkgPTt8\nZIZgsHuOhzkncLqsVz690TZbYBnPmPEAfJqbQZ6GLQKBgQDEzNwjtWad90MUO93i\n+9sm3H2RYZaowYI/4OOl7D2g4DUWypPG+dUw4hySvG2HGBfAdj4aOczWE3ilnYIw\nwP+2KdNWeSAtPMWUQJnkwRSglK8sxwHJcpKlzyGEp2eyh2SlofqWMspQ/uwnaLye\njneIvCeNwunLpgBXIjm+qqh5gg==\n-----END PRIVATE KEY-----\n",
+  "client_email": "vision-api-service-account@creditcardscanner-457505.iam.gserviceaccount.com",
+  "client_id": "109393192567963494896",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/vision-api-service-account%40creditcardscanner-457505.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
