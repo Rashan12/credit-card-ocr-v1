@@ -16,8 +16,13 @@ class MetricsDB:
 
     def initialize(self):
         cursor = self.conn.cursor()
+        # Drop old tables if they exist to ensure schema consistency
+        cursor.execute('DROP TABLE IF EXISTS metrics')
+        cursor.execute('DROP TABLE IF EXISTS training_logs')
+        cursor.execute('DROP TABLE IF EXISTS transition_log')
+
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS metrics (
+            CREATE TABLE metrics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 side TEXT,
@@ -38,11 +43,11 @@ class MetricsDB:
             )
         ''')
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS training_logs (
+            CREATE TABLE training_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 step INTEGER,
-                epoch INTEGER,
+                batch_size INTEGER,
                 total_loss REAL,
                 card_loss REAL,
                 expiry_loss REAL,
@@ -51,7 +56,7 @@ class MetricsDB:
             )
         ''')
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS transition_log (
+            CREATE TABLE transition_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 field TEXT,
@@ -80,12 +85,12 @@ class MetricsDB:
               user_correction, used_vit_card, used_vit_expiry, used_vit_security))
         self.conn.commit()
 
-    def log_training(self, step, epoch, total_loss, card_loss, expiry_loss, security_loss, learning_rate):
+    def log_training(self, step, batch_size, total_loss, card_loss, expiry_loss, security_loss, learning_rate):
         cursor = self.conn.cursor()
         cursor.execute('''
-            INSERT INTO training_logs (step, epoch, total_loss, card_loss, expiry_loss, security_loss, learning_rate)
+            INSERT INTO training_logs (step, batch_size, total_loss, card_loss, expiry_loss, security_loss, learning_rate)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (step, epoch, total_loss, card_loss, expiry_loss, security_loss, learning_rate))
+        ''', (step, batch_size, total_loss, card_loss, expiry_loss, security_loss, learning_rate))
         self.conn.commit()
 
     def log_transition(self, field, used_vit, user_correction, vit_accuracy, vision_accuracy):

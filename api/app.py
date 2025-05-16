@@ -4,157 +4,61 @@ from vit_model.model.vit_model import CreditCardViT
 from vit_model.model.online_learning import OnlineLearner
 from vit_model.model.validation import validate_card_details
 from vision_api.ocr_service import extract_card_details, live_extract_card_details
+from metrics_db import MetricsDB
 from PIL import Image
 import io
 import os
 import torch
 import time
-import sqlite3
-from datetime import datetime, timedelta
-from threading import Lock
-from transformers import ViTModel
 import base64
 import torchvision.transforms as transforms
 from dotenv import load_dotenv
+import hashlib
+from datetime import datetime
 
-# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
-# Transition state
-USE_VISION_API = True  # Will be updated based on transition criteria
+USE_VISION_API = True
 
-# Database path (use environment variable for Fly.io volume)
-DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), 'metrics.db'))
+API_KEYS = {
+    "test_key": hashlib.sha256("test_key".encode()).hexdigest()
+}
 
-class MetricsDB:
-    _instance = None
-    _lock = Lock()
-
-    def __new__(cls):
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super(MetricsDB, cls).__new__(cls)
-                    cls._instance.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-                    cls._instance.initialize()
-        return cls._instance
-
-    def initialize(self):
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS metrics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME,
-                side TEXT,
-                vision_success INTEGER,
-                vit_accuracy_card REAL,
-                vit_accuracy_expiry REAL,
-                vit_accuracy_security REAL,
-                vision_confidence_card REAL,
-                vision_confidence_expiry REAL,
-                vision_confidence_security REAL,
-                vit_confidence_card REAL,
-                vit_confidence_expiry REAL,
-                vit_confidence_security REAL,
-                user_correction INTEGER,
-                used_vit_card INTEGER,
-                used_vit_expiry INTEGER,
-                used_vit_security INTEGER
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS transition_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME,
-                field TEXT,
-                used_vit INTEGER,
-                user_correction INTEGER,
-                vit_accuracy REAL,
-                vision_accuracy REAL
-            )
-        ''')
-        cursor.execute("PRAGMA table_info(transition_log)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if 'user_correction' not in columns:
-            cursor.execute('ALTER TABLE transition_log ADD COLUMN user_correction INTEGER DEFAULT 0')
-        self.conn.commit()
-
-    def log_metrics(self, is_front, side, vision_success, vit_accuracy_card, vit_accuracy_expiry, vit_accuracy_security,
-                    vision_confidence, vit_confidence, used_vit):
-        current_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            INSERT INTO metrics (timestamp, side, vision_success, vit_accuracy_card, vit_accuracy_expiry, vit_accuracy_security,
-                                vision_confidence_card, vision_confidence_expiry, vision_confidence_security,
-                                vit_confidence_card, vit_confidence_expiry, vit_confidence_security,
-                                user_correction, used_vit_card, used_vit_expiry, used_vit_security)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (current_timestamp, side, vision_success, vit_accuracy_card, vit_accuracy_expiry, vit_accuracy_security,
-              vision_confidence["card_number"], vision_confidence["expiry_date"], vision_confidence["security_number"],
-              vit_confidence["card_number"], vit_confidence["expiry_date"], vit_confidence["security_number"],
-              0, 1 if used_vit["card_number"] else 0, 1 if used_vit["expiry_date"] else 0, 1 if used_vit["security_number"] else 0))
-
-        if USE_VISION_API and vision_success and is_front:
-            if validated_result["card_number"]:
-                cursor.execute('''
-                    INSERT INTO transition_log (timestamp, field, used_vit, user_correction, vit_accuracy, vision_accuracy)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (current_timestamp, "card_number", 1 if used_vit["card_number"] else 0, 0, vit_accuracy_card, 1.0 if validated_result["card_number"] else 0.0))
-            if validated_result["expiry_date"]:
-                cursor.execute('''
-                    INSERT INTO transition_log (timestamp, field, used_vit, user_correction, vit_accuracy, vision_accuracy)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (current_timestamp, "expiry_date", 1 if used_vit["expiry_date"] else 0, 0, vit_accuracy_expiry, 1.0 if validated_result["expiry_date"] else 0.0))
-        elif not USE_VISION_API and is_front:
-            if validated_result["card_number"]:
-                cursor.execute('''
-                    INSERT INTO transition_log (timestamp, field, used_vit, user_correction, vit_accuracy, vision_accuracy)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (current_timestamp, "card_number", 1 if used_vit["card_number"] else 0, 0, vit_accuracy_card, 0.0))
-            if validated_result["expiry_date"]:
-                cursor.execute('''
-                    INSERT INTO transition_log (timestamp, field, used_vit, user_correction, vit_accuracy, vision_accuracy)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (current_timestamp, "expiry_date", 1 if used_vit["expiry_date"] else 0, 0, vit_accuracy_expiry, 0.0))
-        elif USE_VISION_API and vision_success and not is_front:
-            if validated_result["security_number"]:
-                cursor.execute('''
-                    INSERT INTO transition_log (timestamp, field, used_vit, user_correction, vit_accuracy, vision_accuracy)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (current_timestamp, "security_number", 1 if used_vit["security_number"] else 0, 0, vit_accuracy_security, 1.0 if validated_result["security_number"] else 0.0))
-        elif not USE_VISION_API and not is_front:
-            if validated_result["security_number"]:
-                cursor.execute('''
-                    INSERT INTO transition_log (timestamp, field, used_vit, user_correction, vit_accuracy, vision_accuracy)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (current_timestamp, "security_number", 1 if used_vit["security_number"] else 0, 0, vit_accuracy_security, 0.0))
-        self.conn.commit()
-        print(f"Logged metrics for {side} to database successfully")
-
-# Initialize model and learner at module level
+model_trained = False
+sample_images = []
+sample_labels = [
+    {"card_number": "1234567890123456", "expiry_date": "12/25", "cvv": "789"},
+]
 try:
     model = CreditCardViT()
-    # Load pre-trained weights from Hugging Face
-    pretrained_model = ViTModel.from_pretrained('google/vit-base-patch16-224')
-    # Assuming CreditCardViT can load ViTModel weights (may need adaptation depending on implementation)
+    pretrained_model = torch.hub.load('pytorch/vision', 'vit_b_16', pretrained=True)
     model.load_state_dict(pretrained_model.state_dict(), strict=False)
     print("Loaded pre-trained weights from google/vit-base-patch16-224")
 
-    model_path = "vit_model_weights.pth"
+    model_path = os.path.join(os.path.dirname(__file__), "vit_model_weights.pth")
     if os.path.exists(model_path):
-        print(f"Loading model weights from {model_path}")
-        model.load(model_path)
+        model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
+        print(f"Loaded fine-tuned weights from {model_path}")
+    metrics_db = MetricsDB()
+    learner = OnlineLearner(model, metrics_db)
+
+    if not os.path.exists(model_path) and sample_images:
+        print("Performing initial training with sample images...")
+        for img_path, label in zip(sample_images, sample_labels):
+            if os.path.exists(img_path):
+                img = Image.open(img_path).convert('RGB')
+                learner.update_with_feedback(img, label, num_epochs=5)
+        torch.save(model.state_dict(), model_path)
+        model_trained = True
+        print("Initial training completed and weights saved.")
     else:
-        print("No pre-trained weights found at specified path. Using Hugging Face weights.")
-    metrics_db = MetricsDB()  # Create MetricsDB instance
-    learner = OnlineLearner(model, metrics_db)  # Pass metrics_db to OnlineLearner
-    print("Model and learner initialized successfully")
+        print("Model and learner initialized successfully.")
 except Exception as e:
     print(f"Error initializing model: {str(e)}")
-    raise e
+    raise
 
 def check_transition_criteria():
     global USE_VISION_API
@@ -168,12 +72,12 @@ def check_transition_criteria():
             ORDER BY timestamp
         ''')
         results = cursor.fetchall()
-        if len(results) < 14:  # Need 14 days of data
+        if len(results) < 14:
             print("Not enough data for transition (less than 14 days).")
             return False
         for row in results:
             vit_accuracy_card, vit_accuracy_expiry, vit_accuracy_security = row
-            if (vit_accuracy_card < 0.99 or vit_accuracy_expiry < 0.99 or vit_accuracy_security < 0.99):
+            if vit_accuracy_card < 0.99 or vit_accuracy_expiry < 0.99 or vit_accuracy_security < 0.99:
                 print("ViT accuracies not high enough for transition.")
                 return False
         USE_VISION_API = False
@@ -190,32 +94,67 @@ def calculate_accuracy(prediction, ground_truth):
     correct = sum(1 for p, t in zip(prediction, ground_truth) if p == t)
     return correct / total if total > 0 else 0.0
 
+@app.route('/docs', methods=['GET'])
+def get_docs():
+    docs = {
+        "endpoints": {
+            "/ocr": {
+                "method": "POST",
+                "description": "Process front and back credit card images for OCR.",
+                "headers": {"X-API-Key": "Your API key"},
+                "body": {"front_image": "Image file (JPEG/PNG)", "back_image": "Image file (JPEG/PNG)"},
+                "response": {
+                    "front": {"card_number": "string", "expiry_date": "string", "card_type": "string", "errors": "list", "snapshot": "string"},
+                    "back": {"security_number": "string", "errors": "list", "snapshot": "string"},
+                    "processing_time": "float"
+                }
+            },
+            "/live_ocr": {
+                "method": "POST",
+                "description": "Process a single frame for live OCR.",
+                "headers": {"X-API-Key": "Your API key"},
+                "body": {"image": "Image file (JPEG/PNG)", "is_front": "boolean (true for front, false for back)"},
+                "response": {
+                    "ocr_result": {"card_number": "string", "expiry_date": "string", "security_number": "string"},
+                    "instruction": "string",
+                    "processing_time": "float"
+                }
+            }
+        }
+    }
+    return jsonify(docs)
+
 @app.route('/ocr', methods=['POST'])
 def process_card():
-    global USE_VISION_API
+    global USE_VISION_API, model_trained
     start_time = time.time()
     print("Received /ocr request...")
 
-    # Validate request for both front and back images
+    if not model_trained and sample_images:
+        print("Performing initial training on first request...")
+        for img_path, label in zip(sample_images, sample_labels):
+            if os.path.exists(img_path):
+                img = Image.open(img_path).convert('RGB')
+                learner.update_with_feedback(img, label, num_epochs=5)
+        torch.save(model.state_dict(), os.path.join(os.path.dirname(__file__), "vit_model_weights.pth"))
+        model_trained = True
+        print("Initial training completed.")
+
     if 'front_image' not in request.files or 'back_image' not in request.files:
-        print("Missing front_image or back_image in request.")
         return jsonify({"error": "Both front_image and back_image are required"}), 400
 
     front_file = request.files['front_image']
     back_file = request.files['back_image']
     print("Processing both front and back images...")
 
-    # Process front image
-    front_result = process_single_side(front_file, 'front', is_front=True)
+    front_result = process_single_side(front_file, 'front', True)
     if 'error' in front_result:
         return jsonify(front_result), 500
 
-    # Process back image
-    back_result = process_single_side(back_file, 'back', is_front=False)
+    back_result = process_single_side(back_file, 'back', False)
     if 'error' in back_result:
         return jsonify(back_result), 500
 
-    # Combine results
     combined_result = {
         "front": front_result["result"],
         "back": back_result["result"],
@@ -245,7 +184,6 @@ def process_card():
     }
     print(f"Combined result: {combined_result}")
 
-    # Check transition criteria
     try:
         check_transition_criteria()
     except Exception as e:
@@ -256,179 +194,161 @@ def process_card():
 
 def process_single_side(file, side, is_front):
     start_time = time.time()
-    global validated_result
-    vision_result = None
-    vision_success = 0
-    vision_confidence = {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0}
-    vision_accuracy_card = 0.0
-    vision_accuracy_expiry = 0.0
-    vision_accuracy_security = 0.0
-    vit_result = None
-    validated_vit = {"card_number": "", "expiry_date": "", "security_number": "", "card_type": "Unknown", "errors": ["ViT skipped"], "use_vit": {}}
-    vit_accuracy_card = 0.0
-    vit_accuracy_expiry = 0.0
-    vit_accuracy_security = 0.0
-    vit_confidence = {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0}
+    print(f"Starting processing for {side} side at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # Read image file stream directly for real-time processing
+    read_start = time.time()
     try:
         file_stream = file.stream.read()
         if not file_stream:
-            print(f"{side} image file is empty.")
-            return {"error": f"{side} image file is empty"}
+            return {
+                "error": f"{side} image file is empty",
+                "confidence_scores": {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0},
+                "used_vit": {"card_number": False, "expiry_date": False, "security_number": False}
+            }
     except Exception as e:
-        print(f"Error reading {side} image stream: {str(e)}")
-        return {"error": f"Failed to read {side} image stream: {str(e)}"}
+        return {
+            "error": f"Failed to read {side} image stream: {str(e)}",
+            "confidence_scores": {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0},
+            "used_vit": {"card_number": False, "expiry_date": False, "security_number": False}
+        }
+    print(f"File read for {side} took {(time.time() - read_start):.2f} seconds")
 
-    # Convert stream to image for snapshot and processing
-    image = Image.open(io.BytesIO(file_stream)).convert('RGB')
-    snapshot = base64.b64encode(io.BytesIO(file_stream).getvalue()).decode('utf-8')
-    cropped_snapshot = snapshot  # Assuming cropped_snapshot is derived from snapshot; adjust if necessary
-
-    # Call updated extract_card_details (handles both Vision API and ViT)
-    vision_start = time.time()
-    print(f"Calling extract_card_details for {side}...")
+    image_open_start = time.time()
     try:
-        result = extract_card_details(file_stream, is_front=is_front)
-        print(f"extract_card_details result for {side}: {result}")
-        if "error" in result:
-            print(f"extract_card_details error for {side}: {result['error']}")
-            return {"error": result["error"]}
+        image = Image.open(io.BytesIO(file_stream)).convert('RGB')
+        snapshot = base64.b64encode(file_stream).decode('utf-8')
+        cropped_snapshot = snapshot
     except Exception as e:
-        print(f"Unexpected error calling extract_card_details for {side}: {str(e)}")
-        return {"error": f"Unexpected error for {side}: {str(e)}"}
-    vision_end = time.time()
-    print(f"extract_card_details processing time for {side}: {vision_end - vision_start:.2f} seconds")
+        return {
+            "error": f"Failed to open {side} image: {str(e)}",
+            "confidence_scores": {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0},
+            "used_vit": {"card_number": False, "expiry_date": False, "security_number": False}
+        }
+    print(f"Image open and encode for {side} took {(time.time() - image_open_start):.2f} seconds")
 
-    # Extract results
+    extract_start = time.time()
+    try:
+        result = extract_card_details(file_stream, is_front, USE_VISION_API)
+        print(f"Result from extract_card_details for {side}: {result}")
+        if not isinstance(result, dict):
+            return {
+                "error": f"Invalid result from extract_card_details for {side}: {result}",
+                "confidence_scores": {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0},
+                "used_vit": {"card_number": False, "expiry_date": False, "security_number": False}
+            }
+        if "error" in result:
+            return {
+                "error": result["error"],
+                "confidence_scores": result.get("confidence_scores", {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0}),
+                "used_vit": result.get("used_vit", {"card_number": False, "expiry_date": False, "security_number": False})
+            }
+    except Exception as e:
+        return {
+            "error": f"Processing error for {side} in extract_card_details: {str(e)}",
+            "confidence_scores": {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0},
+            "used_vit": {"card_number": False, "expiry_date": False, "security_number": False}
+        }
+    print(f"Extract card details for {side} took {(time.time() - extract_start):.2f} seconds")
+
+    validate_start = time.time()
     vision_success = 0 if "error" in result else 1
     vision_confidence = {
-        "card_number": result["confidence_scores"]["card_number"] if vision_success else 0.0,
-        "expiry_date": result["confidence_scores"]["expiry_date"] if vision_success else 0.0,
-        "security_number": result["confidence_scores"]["security_number"] if vision_success else 0.0
+        "card_number": result.get("confidence_scores", {}).get("card_number", 0.0) if vision_success else 0.0,
+        "expiry_date": result.get("confidence_scores", {}).get("expiry_date", 0.0) if vision_success else 0.0,
+        "security_number": result.get("confidence_scores", {}).get("security_number", 0.0) if vision_success else 0.0
     }
-    vit_confidence = {
-        "card_number": result["confidence_scores"]["card_number"],
-        "expiry_date": result["confidence_scores"]["expiry_date"],
-        "security_number": result["confidence_scores"]["security_number"]
-    }
-    used_vit = result["used_vit"]
+    vit_confidence = result.get("confidence_scores", {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0})
+    used_vit = result.get("used_vit", {"card_number": False, "expiry_date": False, "security_number": False})
 
-    # Validate result
     try:
         validated_result = validate_card_details({
-            "card_number": result["card_number"],
-            "expiry_date": result["expiry_date"],
-            "security_number": result["security_number"]
-        }, is_front=is_front, confidence_scores=result["confidence_scores"])
-        print(f"Validated result for {side}: {validated_result}")
+            "card_number": result.get("card_number", ""),
+            "expiry_date": result.get("expiry_date", ""),
+            "security_number": result.get("security_number", "")
+        }, is_front, result.get("confidence_scores", {}))
     except Exception as e:
-        print(f"Error validating result for {side}: {str(e)}")
-        validated_result = {
-            "card_number": "",
-            "expiry_date": "",
-            "security_number": "",
-            "card_type": "Unknown",
-            "errors": [str(e)],
-            "use_vit": used_vit
+        return {
+            "error": f"Validation error for {side}: {str(e)}",
+            "confidence_scores": {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0},
+            "used_vit": {"card_number": False, "expiry_date": False, "security_number": False}
         }
+    print(f"Validation for {side} took {(time.time() - validate_start):.2f} seconds")
 
-    # Update model with feedback if Vision API succeeded (for each validated field)
-    if USE_VISION_API and vision_success:
-        feedback_start = time.time()
-        try:
-            feedback_data = {
-                "card_number": validated_result["card_number"] if validated_result["card_number"] else "",
-                "expiry_date": validated_result["expiry_date"] if validated_result["expiry_date"] else "",
-                "cvv": validated_result["security_number"] if validated_result["security_number"] else "",
-                "confidence": result["confidence_scores"]["card_number"]  # Using card_number confidence as proxy
-            }
-            # Only update if at least one field is non-empty
-            if feedback_data["card_number"] or feedback_data["expiry_date"] or feedback_data["cvv"]:
-                learner.update_with_feedback(image, feedback_data)
-                print(f"Model updated with {side} feedback from scan")
-        except Exception as e:
-            print(f"Error updating model with {side} feedback from scan: {str(e)}")
-        feedback_end = time.time()
-        print(f"Feedback update time for {side}: {feedback_end - feedback_start:.2f} seconds")
-
-        # Re-run ViT model to calculate updated accuracies after learning
-        try:
-            transform = transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-            ])
-            image_tensor = transform(image).unsqueeze(0)
-            learner.model.eval()
-            with torch.no_grad():
-                card_logits, expiry_logits, security_logits = learner.model(image_tensor)
-                # Convert logits to predicted strings (simplified, assuming model outputs digits directly)
-                pred_card = ''.join([str(torch.argmax(card_logits[i], dim=0).item()) for i in range(16)]) if card_logits.shape[1] == 16 else ''
-                pred_expiry = ''.join([str(torch.argmax(expiry_logits[i], dim=0).item()) for i in range(4)]) if expiry_logits.shape[1] == 4 else ''
-                pred_security = ''.join([str(torch.argmax(security_logits[i], dim=0).item()) for i in range(3)]) if security_logits.shape[1] == 3 else ''
-                # Format predictions to match validated results
-                pred_card_formatted = ' '.join([pred_card[i:i+4] for i in range(0, 16, 4)]) if pred_card else ''
-                pred_expiry_formatted = f"{pred_expiry[:2]}/{pred_expiry[2:]}" if pred_expiry else ''
-                pred_security_formatted = pred_security if pred_security else ''
-        except Exception as e:
-            print(f"Error re-running ViT model for accuracy calculation on {side}: {str(e)}")
-            pred_card_formatted = pred_expiry_formatted = pred_security_formatted = ''
-
-    # Calculate accuracies (using Vision API as ground truth if available)
-    if USE_VISION_API and vision_success:
-        vision_accuracy_card = 1.0 if validated_result["card_number"] else 0.0
-        vision_accuracy_expiry = 1.0 if validated_result["expiry_date"] else 0.0
-        vision_accuracy_security = 1.0 if validated_result["security_number"] else 0.0
-        if is_front:
-            if validated_result["card_number"]:
-                gt_card = validated_result["card_number"].replace(" ", "")
-                pred_card = pred_card_formatted.replace(" ", "") if pred_card_formatted else result["card_number"].replace(" ", "")
-                vit_accuracy_card = calculate_accuracy(pred_card, gt_card) if pred_card else 0.0
-            if validated_result["expiry_date"]:
-                gt_expiry = validated_result["expiry_date"].replace("/", "")
-                pred_expiry = pred_expiry_formatted.replace("/", "") if pred_expiry_formatted else result["expiry_date"].replace("/", "")
-                vit_accuracy_expiry = calculate_accuracy(pred_expiry, gt_expiry) if pred_expiry else 0.0
-        else:
-            if validated_result["security_number"]:
-                gt_security = validated_result["security_number"]
-                pred_security = pred_security_formatted if pred_security_formatted else result["security_number"]
-                vit_accuracy_security = calculate_accuracy(pred_security, gt_security) if pred_security else 0.0
-        print(f"Calculated accuracies for {side} - ViT: card={vit_accuracy_card}, expiry={vit_accuracy_expiry}, security={vit_accuracy_security}")
-
-    # Log metrics to database
+    # Log ViT predictions for monitoring (even if not used)
+    vit_predictions = learner.model.predict(image)
     metrics_db = MetricsDB()
-    metrics_db.log_metrics(is_front, side, vision_success, vit_accuracy_card, vit_accuracy_expiry, vit_accuracy_security,
-                          vision_confidence, vit_confidence, used_vit)
+    metrics_db.log_transition(
+        "card_number" if is_front else "security_number",
+        1 if used_vit["card_number"] or used_vit["security_number"] else 0,
+        0,
+        vit_confidence["card_number"] if is_front else vit_confidence["security_number"],
+        vision_confidence["card_number"] if is_front else vision_confidence["security_number"]
+    )
 
-    # Prepare final result (Vision API only initially, until ViT is 100% accurate)
+    feedback_start = time.time()
+    if USE_VISION_API and vision_success:
+        feedback_data = {
+            "card_number": validated_result.get("card_number", ""),
+            "expiry_date": validated_result.get("expiry_date", ""),
+            "cvv": validated_result.get("security_number", ""),
+            "confidence": result.get("confidence_scores", {}).get("card_number", 0.0)
+        }
+        if feedback_data["card_number"] or feedback_data["expiry_date"] or feedback_data["cvv"]:
+            try:
+                learner.update_with_feedback(image, feedback_data)
+            except Exception as e:
+                print(f"Error updating learner with feedback for {side}: {str(e)}")
+    print(f"Feedback update for {side} took {(time.time() - feedback_start):.2f} seconds")
+
+    metrics_start = time.time()
+    vit_accuracy_card = vit_accuracy_expiry = vit_accuracy_security = 0.0
+    if USE_VISION_API and vision_success and is_front:
+        if validated_result.get("card_number"):
+            gt_card = validated_result["card_number"].replace(" ", "")
+            pred_card = result.get("card_number", "").replace(" ", "")
+            vit_accuracy_card = calculate_accuracy(pred_card, gt_card) if used_vit["card_number"] else 0.0
+        if validated_result.get("expiry_date"):
+            gt_expiry = validated_result["expiry_date"].replace("/", "")
+            pred_expiry = result.get("expiry_date", "").replace("/", "")
+            vit_accuracy_expiry = calculate_accuracy(pred_expiry, gt_expiry) if used_vit["expiry_date"] else 0.0
+    elif USE_VISION_API and vision_success and not is_front:
+        if validated_result.get("security_number"):
+            gt_security = validated_result["security_number"]
+            pred_security = result.get("security_number", "")
+            vit_accuracy_security = calculate_accuracy(pred_security, gt_security) if used_vit["security_number"] else 0.0
+
+    metrics_db.log_metrics(
+        is_front, side, vision_success, vit_accuracy_card, vit_accuracy_expiry, vit_accuracy_security,
+        vision_confidence["card_number"], vision_confidence["expiry_date"], vision_confidence["security_number"],
+        vit_confidence["card_number"], vit_confidence["expiry_date"], vit_confidence["security_number"],
+        0, 1 if used_vit["card_number"] else 0, 1 if used_vit["expiry_date"] else 0, 1 if used_vit["security_number"] else 0
+    )
+    print(f"Metrics logging for {side} took {(time.time() - metrics_start):.2f} seconds")
+
     final_result = {
-        "card_number": result["card_number"] if USE_VISION_API else validated_result["card_number"],
-        "expiry_date": result["expiry_date"] if USE_VISION_API else validated_result["expiry_date"],
-        "security_number": result["security_number"] if USE_VISION_API else validated_result["security_number"],
-        "card_type": validated_result["card_type"],
-        "errors": result["errors"],
+        "card_number": result.get("card_number", ""),
+        "expiry_date": result.get("expiry_date", ""),
+        "security_number": result.get("security_number", ""),
+        "card_type": validated_result.get("card_type", ""),
+        "errors": result.get("errors", []),
         "snapshot": cropped_snapshot
     }
-    if not USE_VISION_API and validated_result.get("use_vit", {}).get(side == 'front' and "card_number" or "security_number", False):
+    if not USE_VISION_API:
         final_result.update({
-            "card_number": validated_result["card_number"] if side == 'front' else "",
-            "expiry_date": validated_result["expiry_date"] if side == 'front' else "",
-            "security_number": validated_result["security_number"] if side == 'back' else ""
+            "card_number": validated_result.get("card_number", "") if side == 'front' else "",
+            "expiry_date": validated_result.get("expiry_date", "") if side == 'front' else "",
+            "security_number": validated_result.get("security_number", "") if side == 'back' else ""
         })
 
+    print(f"Total processing time for {side}: {(time.time() - start_time):.2f} seconds")
     return {
         "result": final_result,
-        "confidence_scores": result["confidence_scores"],
+        "confidence_scores": result.get("confidence_scores", {"card_number": 0.0, "expiry_date": 0.0, "security_number": 0.0}),
         "used_vit": used_vit,
         "vit_accuracy_card": vit_accuracy_card,
         "vit_accuracy_expiry": vit_accuracy_expiry,
         "vit_accuracy_security": vit_accuracy_security
     }
-
-def log_metrics(side, vision_success, vit_accuracy_card, vit_accuracy_expiry, vit_accuracy_security, vision_confidence, vit_confidence, used_vit):
-    # This function is now handled by MetricsDB class
-    pass
 
 @app.route('/live_ocr', methods=['POST'])
 def live_ocr():
@@ -437,15 +357,16 @@ def live_ocr():
     image_file = request.files['image']
     image_content = image_file.read()
     is_front = request.form.get('is_front', 'true').lower() == 'true'
-    result = live_extract_card_details(image_content, is_front=is_front)
-    return jsonify(result)
+    try:
+        result = live_extract_card_details(image_content, is_front)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": f"Live OCR error: {str(e)}", "processing_time": 0.0}), 500
 
 @app.route('/feedback', methods=['POST'])
 def provide_feedback():
-    print("Received /feedback request...")
     data = request.get_json()
     if not data or 'image_path' not in data or 'corrections' not in data or 'side' not in data:
-        print("Invalid feedback data provided.")
         return jsonify({"error": "Invalid feedback data"}), 400
 
     image_path = data['image_path']
@@ -453,19 +374,19 @@ def provide_feedback():
     side = data['side']
     is_front = side == 'front'
 
-    # Save the image to a temporary file if not already saved
     if not os.path.exists(image_path):
-        temp_image = Image.open(io.BytesIO(base64.b64decode(image_path.split(',')[1] if ',' in image_path else image_path)))
-        temp_image.save(f"temp_{side}.jpg")
-        image_path = f"temp_{side}.jpg"
+        try:
+            temp_image = Image.open(io.BytesIO(base64.b64decode(image_path.split(',')[1] if ',' in image_path else image_path)))
+            temp_image.save(f"temp_{side}.jpg")
+            image_path = f"temp_{side}.jpg"
+        except Exception as e:
+            return jsonify({"error": f"Failed to save temporary image for feedback: {str(e)}"}), 500
 
     try:
-        validated_feedback = validate_card_details(corrections, is_front=is_front)
-        if validated_feedback["errors"]:
-            print(f"Feedback validation errors: {validated_feedback['errors']}")
+        validated_feedback = validate_card_details(corrections, is_front)
+        if validated_feedback.get("errors"):
             return jsonify({"error": "Invalid feedback", "details": validated_feedback["errors"]}), 400
     except Exception as e:
-        print(f"Error validating feedback: {str(e)}")
         return jsonify({"error": f"Feedback validation failed: {str(e)}"}), 500
 
     try:
@@ -500,26 +421,20 @@ def provide_feedback():
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), side, 1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1, 0, 0, 0))
         metrics_db.conn.commit()
-        print("Logged feedback to metrics.db")
     except Exception as e:
-        print(f"Database error in feedback: {str(e)}")
-        return jsonify({"error": f"Database error: {str(e)}"}), 500
+        return jsonify({"error": f"Database error in feedback: {str(e)}"}), 500
 
-    response = {
+    return jsonify({
         "message": "Please confirm the corrections",
         "corrected_result": validated_feedback,
         "image_path": image_path,
         "side": side
-    }
-    print(f"Returning feedback response: {response}")
-    return jsonify(response)
+    })
 
 @app.route('/confirm_feedback', methods=['POST'])
 def confirm_feedback():
-    print("Received /confirm_feedback request...")
     data = request.get_json()
     if not data or 'image_path' not in data or 'corrections' not in data or 'side' not in data:
-        print("Invalid confirmation data provided.")
         return jsonify({"error": "Invalid confirmation data"}), 400
 
     image_path = data['image_path']
@@ -530,27 +445,27 @@ def confirm_feedback():
         try:
             image = Image.open(image_path).convert('RGB')
             learner.update_with_feedback(image, corrections, num_epochs=3)
-            print(f"Model updated with {side} feedback")
         except Exception as e:
-            print(f"Error updating model with feedback: {str(e)}")
             return jsonify({"error": f"Failed to update model: {str(e)}"}), 500
     else:
-        print(f"Image path {image_path} does not exist, skipping update")
         return jsonify({"error": f"Image file not found at {image_path}"}), 400
 
-    response = {"message": f"Model updated with {side} feedback"}
-    print(f"Returning confirm_feedback response: {response}")
-    return jsonify(response)
+    return jsonify({"message": f"Model updated with {side} feedback"})
 
 @app.route('/proceed', methods=['POST'])
 def proceed():
-    print("Received /proceed request...")
-    # Process any remaining feedback in the buffer before deleting data
     try:
         learner.process_feedback_batch()
-        print("Processed remaining feedback buffer before proceeding")
+        # Delete temporary image files
+        for side in ['front', 'back']:
+            temp_file = f"temp_{side}.jpg"
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+                print(f"Deleted temporary file: {temp_file}")
     except Exception as e:
-        print(f"Error processing feedback buffer on proceed: {str(e)}")
-    response = {"message": "Proceed confirmed, all temporary data deleted"}
-    print(f"Returning proceed response: {response}")
-    return jsonify(response)
+        print(f"Error processing feedback buffer: {str(e)}")
+        return jsonify({"error": f"Failed to process feedback: {str(e)}"}), 500
+    return jsonify({"message": "Proceed confirmed, all temporary data deleted"})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)

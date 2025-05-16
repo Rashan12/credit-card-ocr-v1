@@ -8,8 +8,10 @@ import torch.nn.functional as F
 class CreditCardViT(nn.Module):
     def __init__(self, num_classes_card=16, num_classes_expiry=4, num_classes_security=7):
         super(CreditCardViT, self).__init__()
-        self.vit = ViTModel.from_pretrained('google/vit-base-patch16-224')
+        config = ViTConfig.from_pretrained('google/vit-base-patch16-224')
+        self.vit = ViTModel.from_pretrained('google/vit-base-patch16-224', config=config, ignore_mismatched_sizes=True)
         
+        # Freeze early layers, fine-tune later ones
         for param in self.vit.parameters():
             param.requires_grad = False
         
@@ -47,6 +49,17 @@ class CreditCardViT(nn.Module):
     def predict(self, image):
         self.eval()
         with torch.no_grad():
+            # Check if the input is a PIL Image or a pre-transformed tensor
+            if isinstance(image, Image.Image):
+                image = self.transform(image).unsqueeze(0).to(next(self.parameters()).device)
+            elif isinstance(image, torch.Tensor):
+                # Ensure the tensor is on the correct device and has the correct shape
+                if image.dim() == 3:
+                    image = image.unsqueeze(0)
+                image = image.to(next(self.parameters()).device)
+            else:
+                raise ValueError("Input to predict must be a PIL Image or a torch.Tensor")
+
             card_logits, expiry_logits, security_logits = self.forward(image)
             
             # Compute softmax probabilities
@@ -59,7 +72,7 @@ class CreditCardViT(nn.Module):
             expiry_pred = torch.argmax(expiry_probs, dim=-1).cpu().numpy()[0]
             security_pred = torch.argmax(security_probs, dim=-1).cpu().numpy()[0]
 
-            # Compute confidence scores (average probability of predicted classes)
+            # Compute confidence scores
             card_confidence = card_probs[0, range(len(card_pred)), card_pred].mean().item()
             expiry_confidence = expiry_probs[0, range(len(expiry_pred)), expiry_pred].mean().item()
             security_confidence = security_probs[0, range(len(security_pred)), security_pred].mean().item()
@@ -68,7 +81,7 @@ class CreditCardViT(nn.Module):
             card_number = ' '.join([card_number[i:i+4] for i in range(0, 16, 4)])
             expiry = ''.join(map(str, expiry_pred))
             expiry = f"{expiry[:2]}/{expiry[2:4]}"
-            security = ''.join(map(str, security_pred)).ljust(7, '0')[:7]
+            security = ''.join(map(str, security_pred))
 
             return {
                 "predictions": {

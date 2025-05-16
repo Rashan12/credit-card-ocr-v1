@@ -8,7 +8,7 @@ import os
 import numpy as np
 
 class OnlineLearner:
-    def __init__(self, model, metrics_db, learning_rate=5e-3, T_max=150, eta_min=1e-6, weight_decay=1e-4):
+    def __init__(self, model, metrics_db, learning_rate=5e-5, T_max=150, eta_min=1e-6, weight_decay=1e-4):
         self.model = model
         self.optimizer = AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
         self.scheduler = CosineAnnealingLR(self.optimizer, T_max=T_max, eta_min=eta_min)
@@ -18,34 +18,32 @@ class OnlineLearner:
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
-        self.metrics_db = metrics_db  # Use the passed MetricsDB instance
+        self.metrics_db = metrics_db
         self.step_count = 0
-        self.feedback_buffer = []  # Buffer to store feedback for batch learning
+        self.feedback_buffer = []
 
     def train_step(self, image, card_number_target, expiry_target, security_target):
         self.model.train()
         self.optimizer.zero_grad()
 
-        image_tensor = self.transform(image)
+        image_tensor = self.transform(image).to(next(self.model.parameters()).device)
         image_tensor = image_tensor.unsqueeze(0) if image_tensor.dim() == 3 else image_tensor
         card_logits, expiry_logits, security_logits = self.model(image_tensor)
 
-        card_target = torch.tensor([card_number_target], dtype=torch.long)
-        expiry_target = torch.tensor([expiry_target], dtype=torch.long)
-        security_target = torch.tensor([security_target], dtype=torch.long)
+        card_target = torch.tensor(card_number_target, dtype=torch.long).to(next(self.model.parameters()).device)
+        expiry_target = torch.tensor(expiry_target, dtype=torch.long).to(next(self.model.parameters()).device)
+        security_target = torch.tensor(security_target, dtype=torch.long).to(next(self.model.parameters()).device)
 
-        card_loss = self.criterion(card_logits.view(-1, 10), card_target.view(-1))
-        expiry_loss = self.criterion(expiry_logits.view(-1, 10), expiry_target.view(-1))
-        security_loss = self.criterion(security_logits.view(-1, 10), security_target.view(-1))
+        card_loss = self.criterion(card_logits.view(-1, 10), card_target)
+        expiry_loss = self.criterion(expiry_logits.view(-1, 10), expiry_target)
+        security_loss = self.criterion(security_logits.view(-1, 10), security_target)
         total_loss = card_loss + expiry_loss + security_loss
 
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         total_loss.backward()
         self.optimizer.step()
 
-        if total_loss.item() < 0.01:
-            return total_loss.item(), card_loss.item(), expiry_loss.item(), security_loss.item(), True
-        return total_loss.item(), card_loss.item(), expiry_loss.item(), security_loss.item(), False
+        return total_loss.item(), card_loss.item(), expiry_loss.item(), security_loss.item()
 
     def process_feedback_batch(self):
         if not self.feedback_buffer:
@@ -94,13 +92,9 @@ class OnlineLearner:
               f"Total Loss: {total_loss.item()}, Card Loss: {card_loss.item()}, "
               f"Expiry Loss: {expiry_loss.item()}, Security Loss: {security_loss.item()}, "
               f"Learning Rate: {learning_rate}")
-        self.metrics_db.log_training(self.step_count, 1, total_loss.item(), card_loss.item(), expiry_loss.item(), security_loss.item(), learning_rate)
+        self.metrics_db.log_training(self.step_count, len(self.feedback_buffer), total_loss.item(), card_loss.item(), expiry_loss.item(), security_loss.item(), learning_rate)
 
-        if total_loss.item() < 0.01:
-            self.feedback_buffer.clear()
-        else:
-            self.feedback_buffer = self.feedback_buffer[-5:]  # Keep last 5 for next batch if needed
-
+        self.feedback_buffer = self.feedback_buffer[-5:]
         self.scheduler.step()
         save_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "api", "vit_model_weights.pth")
         self.model.save(save_path)
@@ -117,14 +111,12 @@ class OnlineLearner:
 
         self.feedback_buffer.append((image, feedback))
 
-        # Process batch if buffer size reaches 5 or on proceed
         if len(self.feedback_buffer) >= 5:
             self.process_feedback_batch()
 
-        # Immediate learning for single feedback if no batching yet
         if len(self.feedback_buffer) == 1:
             for epoch in range(num_epochs):
-                total_loss, card_loss, expiry_loss, security_loss, stop_early = self.train_step(
+                total_loss, card_loss, expiry_loss, security_loss = self.train_step(
                     image, card_target, expiry_target, security_target
                 )
                 self.step_count += 1
@@ -133,8 +125,6 @@ class OnlineLearner:
                       f"Total Loss: {total_loss}, Card Loss: {card_loss}, Expiry Loss: {expiry_loss}, "
                       f"Security Loss: {security_loss}, Learning Rate: {learning_rate}")
                 self.metrics_db.log_training(self.step_count, epoch + 1, total_loss, card_loss, expiry_loss, security_loss, learning_rate)
-                if stop_early:
-                    break
 
             self.scheduler.step()
             save_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "api", "vit_model_weights.pth")
